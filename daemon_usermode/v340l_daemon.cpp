@@ -132,10 +132,11 @@ int main() {
         std::cerr << "[!] CRITICAL: Could not find wx8200.rom in working directory!" << std::endl;
         return 1;
     }
-    std::vector<uint8_t> vbios_buffer(65536, 0); 
-    fread(vbios_buffer.data(), 1, 65536, f);
+    std::vector<uint8_t> vbios_buffer(65536, 0);
+    size_t bytes_read = fread(vbios_buffer.data(), 1, 65536, f);
     fclose(f);
-    std::cout << "[+] WX 8200 vBIOS loaded into memory (64KB)." << std::endl;
+    // Day 1 telemetry: confirms exactly how much of the 64KB VF window was filled
+    std::cout << "[+] WX 8200 vBIOS loaded: " << bytes_read << " / 65536 bytes." << std::endl;
 
     // --- PHASE 3: Map BARs ---
     g_hDevice = CreateFileA("\\\\.\\V340Mapper", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
@@ -147,34 +148,53 @@ int main() {
     V340_BAR_INFO bars = {0};
     DWORD bytesReturned;
     if (!DeviceIoControl(g_hDevice, IOCTL_V340_GET_BAR_POINTERS, NULL, 0, &bars, sizeof(bars), &bytesReturned, NULL)) {
-        std::cerr << "[!] Failed to map BARs via IOCTL!" << std::endl;
+        std::cerr << "[!] Failed to map BARs via IOCTL! Error: " << GetLastError() << std::endl;
         return 1;
     }
-    std::cout << "[+] Hardware mapped! BAR0: " << bars.bar0_user_ptr << " | FB BAR: " << bars.bar2_user_ptr << std::endl;
+    // Critical guard: IOCTL can return TRUE while kernel-side MDL mapping silently
+    // failed (e.g. UserMode mapping in wrong thread context). Catch before deref.
+    if (bars.bar0_user_ptr == nullptr || bars.bar2_user_ptr == nullptr) {
+        std::cerr << "[!] IOCTL succeeded but kernel returned NULL pointers." << std::endl;
+        std::cerr << "    Check EvtDevicePrepareHardware thread context vs UserMode MDL mapping." << std::endl;
+        return 1;
+    }
+    uint8_t* bar0 = reinterpret_cast<uint8_t*>(bars.bar0_user_ptr);
+    uint8_t* bar2 = reinterpret_cast<uint8_t*>(bars.bar2_user_ptr);
+    std::cout << "[+] Hardware mapped! BAR0: " << (void*)bar0 << " | FB BAR: " << (void*)bar2 << std::endl;
 
     // --- PHASE 4: Enable RLC Scheduler ---
-    write32(bars.bar0_user_ptr, REG_RLC_GPU_IOV_SCH_1, 0x186A0); // 4ms timeslice
-    write32(bars.bar0_user_ptr, REG_RLC_GPU_IOV_VF_ENABLE, 3);   // Enable VF0 and VF1
+    write32(bar0, REG_RLC_GPU_IOV_SCH_1, 0x186A0); // 4ms timeslice
+    write32(bar0, REG_RLC_GPU_IOV_VF_ENABLE, 3);   // Enable VF0 and VF1
     std::cout << "[+] RunList Controller Scheduler Armed for VFs 0 and 1." << std::endl;
 
     // --- PHASE 5: Mailbox Loop ---
     std::cout << "[*] Entering Mailbox Watchdog Loop..." << std::endl;
 
     while (true) {
-        for (int vf_id = 0; vf_id < 2; vf_id++) { 
-            
-            write32(bars.bar0_user_ptr, REG_MAILBOX_INDEX, vf_id);
-            uint32_t request = read32(bars.bar0_user_ptr, REG_MSGBUF_RCV_DW0);
+        for (int vf_id = 0; vf_id < 2; vf_id++) {
+
+            // Select which VF's mailbox to read
+            write32(bar0, REG_MAILBOX_INDEX, vf_id);
+
+            // Guard: only process RCV_DW0 if RCV_MSG_VALID is set (bit 8 of CONTROL).
+            // Reading DW0 without this check risks acting on stale/uninitialized register
+            // state. mxgpu_ai.c documents this explicitly — peek_msg is only safe when
+            // the valid bit is already asserted by hardware.
+            uint32_t control = read32(bar0, REG_MAILBOX_CONTROL);
+            if ((control & 0x100) == 0)
+                continue;
+
+            uint32_t request = read32(bar0, REG_MSGBUF_RCV_DW0);
 
             if (request == 1) { // IDH_REQ_GPU_INIT_ACCESS
                 std::cout << "[MAILBOX] Received INIT_ACCESS from VF " << vf_id << std::endl;
 
                 // A. Acknowledge Receipt (Write 2 to RCV byte via safe RMW)
-                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 1, 2); 
+                write8_safe(bar0, REG_MAILBOX_CONTROL, 1, 2);
 
                 // B. Write vBIOS (BAR2 + 0x00000)
-                memcpy((uint8_t*)bars.bar2_user_ptr + 0x00000, vbios_buffer.data(), 65536);
-                
+                memcpy(bar2 + 0x00000, vbios_buffer.data(), 65536);
+
                 // C. Write PF2VF Capability Struct (BAR2 + 0x10000)
                 amd_sriov_msg_pf2vf_info pf2vf;
                 memset(&pf2vf, 0, sizeof(pf2vf));
@@ -182,26 +202,26 @@ int main() {
                 pf2vf.header.version = 2; // AMD_SRIOV_MSG_FW_VRAM_PF2VF_VER
                 pf2vf.vf2pf_update_interval_ms = 2000;
                 pf2vf.fcn_idx = vf_id;
-                pf2vf.checksum = 0; 
+                pf2vf.checksum = 0;
                 pf2vf.checksum = compute_checksum(&pf2vf, sizeof(pf2vf), 0);
-                memcpy((uint8_t*)bars.bar2_user_ptr + 0x10000, &pf2vf, sizeof(pf2vf));
-                
+                memcpy(bar2 + 0x10000, &pf2vf, sizeof(pf2vf));
+
                 // D. Send READY_TO_ACCESS
-                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 0, 0); // Clear valid bit
-                write32(bars.bar0_user_ptr, REG_MSGBUF_TRN_DW0, 1);         // READY_TO_ACCESS_GPU
-                write32(bars.bar0_user_ptr, REG_MSGBUF_TRN_DW2, 0);         // Checksum key = 0
-                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 0, 1); // TRN_MSG_VALID = 1
-                
+                write8_safe(bar0, REG_MAILBOX_CONTROL, 0, 0); // Clear TRN valid
+                write32(bar0, REG_MSGBUF_TRN_DW0, 1);         // READY_TO_ACCESS_GPU
+                write32(bar0, REG_MSGBUF_TRN_DW2, 0);         // Checksum key = 0
+                write8_safe(bar0, REG_MAILBOX_CONTROL, 0, 1); // TRN_MSG_VALID = 1
+
                 std::cout << "[MAILBOX] Access Granted. GPU Silicon Unlocked." << std::endl;
             }
             else if (request == 6) { // IDH_REQ_GPU_INIT_DATA
                 std::cout << "[MAILBOX] Received REQ_GPU_INIT_DATA from VF " << vf_id << ". Sending READY." << std::endl;
 
-                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 1, 2); // ACK receipt
-                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 0, 0); // clear TRN valid
-                write32(bars.bar0_user_ptr, REG_MSGBUF_TRN_DW0, 7);         // IDH_REQ_GPU_INIT_DATA_READY
-                write32(bars.bar0_user_ptr, REG_MSGBUF_TRN_DW2, 0);         // dw2 = 0
-                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 0, 1); // set TRN_MSG_VALID
+                write8_safe(bar0, REG_MAILBOX_CONTROL, 1, 2); // ACK receipt
+                write8_safe(bar0, REG_MAILBOX_CONTROL, 0, 0); // Clear TRN valid
+                write32(bar0, REG_MSGBUF_TRN_DW0, 7);         // IDH_REQ_GPU_INIT_DATA_READY
+                write32(bar0, REG_MSGBUF_TRN_DW2, 0);         // dw2 = 0
+                write8_safe(bar0, REG_MAILBOX_CONTROL, 0, 1); // set TRN_MSG_VALID
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
