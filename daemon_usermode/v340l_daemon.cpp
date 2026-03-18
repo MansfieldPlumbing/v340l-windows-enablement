@@ -6,8 +6,7 @@
 #include <chrono>
 
 #include "v340_shared.h"
-// [FIX APPLIED] Directly use AMD's header to ensure compiler ABI & bitfield alignments match the guest exactly.
-#include "amdgv_sriovmsg.h" 
+#include "amdgv_sriovmsg.h"
 
 extern "C" {
     #include "switchtec/switchtec.h"
@@ -23,7 +22,37 @@ extern "C" {
 #define REG_RLC_GPU_IOV_VF_ENABLE 0x3EC00
 #define REG_RLC_GPU_IOV_SCH_1     0x3ECEC
 
-// [FIX APPLIED] Full checksum algorithm with subtraction step in case 'key' is ever non-zero
+// Global handle for graceful exit
+HANDLE g_hDevice = INVALID_HANDLE_VALUE;
+
+// --- SWITCHTEC BIND STRUCT ---
+#pragma pack(push, 1)
+struct gfms_bind_cmd {
+    uint8_t  subcmd;              // MRPC_GFMS_BIND = 0x01
+    uint8_t  host_sw_idx;
+    uint8_t  host_phys_port_id;
+    uint8_t  host_log_port_id;
+    struct {
+        uint16_t pdfid;           // Physical Device Function ID
+        uint8_t  next_valid;      // 1 if another function follows, else 0
+        uint8_t  reserved;        // zero
+    } function[8];
+};
+#pragma pack(pop)
+
+// --- GRACEFUL EXIT HANDLER ---
+BOOL WINAPI ConsoleHandler(DWORD signal) {
+    if (signal == CTRL_C_EVENT || signal == CTRL_CLOSE_EVENT) {
+        std::cout << "\n[!] Shutting down daemon safely... Unmapping BARs." << std::endl;
+        if (g_hDevice != INVALID_HANDLE_VALUE) {
+            CloseHandle(g_hDevice);
+            g_hDevice = INVALID_HANDLE_VALUE;
+        }
+        ExitProcess(0);
+    }
+    return TRUE;
+}
+
 unsigned int compute_checksum(void *obj, unsigned long obj_size, unsigned int key) {
     unsigned int ret = key;
     unsigned char *pos = (unsigned char *)obj;
@@ -41,7 +70,6 @@ inline uint32_t read32(void* base, uint32_t offset) {
     return *(volatile uint32_t*)((uint8_t*)base + offset); 
 }
 
-// [FIX APPLIED] Safe 32-bit Read-Modify-Write to prevent PCIe dropped TLPs/Master Aborts on 8-bit writes
 inline void write8_safe(void* base, uint32_t reg_offset, uint8_t byte_index, uint8_t value) {
     uint32_t val32 = read32(base, reg_offset);
     uint32_t mask = ~(0xFF << (byte_index * 8));
@@ -50,13 +78,44 @@ inline void write8_safe(void* base, uint32_t reg_offset, uint8_t byte_index, uin
 }
 
 int main() {
+    SetConsoleCtrlHandler(ConsoleHandler, TRUE);
     std::cout << "[*] Starting V340L Ghost Hypervisor Daemon..." << std::endl;
+
+    // =========================================================================
+    // TODO: Update these variables from your `gfms_dump` CLI output on Day 1!
+    // =========================================================================
+    uint8_t  discovered_sw_idx       = 0x00; 
+    uint8_t  discovered_phys_port    = 0x00; 
+    uint8_t  discovered_log_port     = 0x00; 
+    uint16_t discovered_pdfid_vf0    = 0x0000;
+    uint16_t discovered_pdfid_vf1    = 0x0001; 
+    // =========================================================================
 
     // --- PHASE 1: Switchtec Fabric Bind ---
     struct switchtec_dev* sw_dev = switchtec_open("\\\\.\\switchtec0");
     if (sw_dev) {
-        // switchtec_cmd(sw_dev, 0x84, &cmd, sizeof(cmd), &result, sizeof(result));
-        std::cout << "[+] Switchtec Fabric Bind command issued." << std::endl;
+        gfms_bind_cmd cmd = {0};
+        cmd.subcmd            = 1; // MRPC_GFMS_BIND
+        cmd.host_sw_idx       = discovered_sw_idx;
+        cmd.host_phys_port_id = discovered_phys_port;
+        cmd.host_log_port_id  = discovered_log_port;
+
+        // Map Die 0
+        cmd.function[0].pdfid      = discovered_pdfid_vf0;
+        cmd.function[0].next_valid = 1; 
+
+        // Map Die 1
+        cmd.function[1].pdfid      = discovered_pdfid_vf1;
+        cmd.function[1].next_valid = 0; // Terminate list
+
+        uint8_t result[4] = {0}; // Status response
+        int ret = switchtec_cmd(sw_dev, 0x84 /* MRPC_GFMS_BIND_UNBIND */, &cmd, sizeof(cmd), &result, sizeof(result));
+
+        if (ret == 0 && result[0] == 0) {
+            std::cout << "[+] Switchtec Fabric Bind successful. Routing opened." << std::endl;
+        } else {
+            std::cerr << "[!] Switchtec MRPC returned error! Status: " << (int)result[0] << std::endl;
+        }
         switchtec_close(sw_dev);
     } else {
         std::cerr << "[!] Skipping Switchtec (Is driver loaded?)" << std::endl;
@@ -74,26 +133,23 @@ int main() {
     std::cout << "[+] WX 8200 vBIOS loaded into memory (64KB)." << std::endl;
 
     // --- PHASE 3: Map BARs ---
-    HANDLE hDevice = CreateFileA("\\\\.\\V340Mapper", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (hDevice == INVALID_HANDLE_VALUE) {
+    g_hDevice = CreateFileA("\\\\.\\V340Mapper", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (g_hDevice == INVALID_HANDLE_VALUE) {
         std::cerr << "[!] Failed to open KMDF Mapper. Ensure v340_mapper.sys is loaded." << std::endl;
         return 1;
     }
 
     V340_BAR_INFO bars = {0};
     DWORD bytesReturned;
-    if (!DeviceIoControl(hDevice, IOCTL_V340_GET_BAR_POINTERS, NULL, 0, &bars, sizeof(bars), &bytesReturned, NULL)) {
+    if (!DeviceIoControl(g_hDevice, IOCTL_V340_GET_BAR_POINTERS, NULL, 0, &bars, sizeof(bars), &bytesReturned, NULL)) {
         std::cerr << "[!] Failed to map BARs via IOCTL!" << std::endl;
         return 1;
     }
-    std::cout << "[+] Hardware mapped! BAR0: " << bars.bar0_user_ptr << " | BAR2: " << bars.bar2_user_ptr << std::endl;
+    std::cout << "[+] Hardware mapped! BAR0: " << bars.bar0_user_ptr << " | FB BAR: " << bars.bar2_user_ptr << std::endl;
 
     // --- PHASE 4: Enable RLC Scheduler ---
-    // [FIX APPLIED] Removed cargo-culted SCH registers. Only writing the world-switch timer (SCH_1).
     write32(bars.bar0_user_ptr, REG_RLC_GPU_IOV_SCH_1, 0x186A0); // 4ms timeslice
-    
-    // [FIX APPLIED] Write 3 (0b11) to properly enable both VF0 and VF1
-    write32(bars.bar0_user_ptr, REG_RLC_GPU_IOV_VF_ENABLE, 3);
+    write32(bars.bar0_user_ptr, REG_RLC_GPU_IOV_VF_ENABLE, 3);   // Enable VF0 and VF1
     std::cout << "[+] RunList Controller Scheduler Armed for VFs 0 and 1." << std::endl;
 
     // --- PHASE 5: Mailbox Loop ---
@@ -117,8 +173,8 @@ int main() {
                 // C. Write PF2VF Capability Struct (BAR2 + 0x10000)
                 amd_sriov_msg_pf2vf_info pf2vf;
                 memset(&pf2vf, 0, sizeof(pf2vf));
-                pf2vf.size = 1024;
-                pf2vf.version = 2; // AMD_SRIOV_MSG_FW_VRAM_PF2VF_VER
+                pf2vf.header.size = 1024;
+                pf2vf.header.version = 2; // AMD_SRIOV_MSG_FW_VRAM_PF2VF_VER
                 pf2vf.vf2pf_update_interval_ms = 2000;
                 pf2vf.fcn_idx = vf_id;
                 pf2vf.checksum = 0; 
@@ -140,6 +196,7 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    CloseHandle(hDevice);
+    // Should never reach here due to Ctrl+C handler, but just in case
+    CloseHandle(g_hDevice);
     return 0;
 }
