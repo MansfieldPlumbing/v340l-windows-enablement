@@ -28,8 +28,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
 }
 
 NTSTATUS EvtDriverDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
-    WdfDeviceInitAssignName(DeviceInit, NULL); 
-    
+    DECLARE_CONST_UNICODE_STRING(devName, L"\\Device\\V340Mapper");
+    DECLARE_CONST_UNICODE_STRING(symLink, L"\\DosDevices\\V340Mapper");
+    WdfDeviceInitAssignName(DeviceInit, &devName);
+
     WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
     pnpCallbacks.EvtDevicePrepareHardware = EvtDevicePrepareHardware;
@@ -41,6 +43,9 @@ NTSTATUS EvtDriverDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
 
     WDFDEVICE device;
     NTSTATUS status = WdfDeviceCreate(&DeviceInit, &deviceAttributes, &device);
+    if (!NT_SUCCESS(status)) return status;
+
+    status = WdfDeviceCreateSymbolicLink(device, &symLink);
     if (!NT_SUCCESS(status)) return status;
 
     status = WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_V340_MAPPER, NULL);
