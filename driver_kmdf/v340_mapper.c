@@ -30,7 +30,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
 NTSTATUS EvtDriverDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
     WdfDeviceInitAssignName(DeviceInit, NULL); 
     
-    // [FIX APPLIED] Register PnP Power Event Callbacks so hardware preparation actually runs!
     WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
     pnpCallbacks.EvtDevicePrepareHardware = EvtDevicePrepareHardware;
@@ -58,13 +57,14 @@ NTSTATUS EvtDriverDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
 NTSTATUS EvtDevicePrepareHardware(WDFDEVICE Device, WDFCMRESLIST ResourcesRaw, WDFCMRESLIST ResourcesTranslated) {
     UNREFERENCED_PARAMETER(ResourcesRaw);
     PDEVICE_CONTEXT ctx = GetDeviceContext(Device);
-    int bar_count = 0;
 
     for (ULONG i = 0; i < WdfCmResourceListGetCount(ResourcesTranslated); i++) {
         PCM_PARTIAL_RESOURCE_DESCRIPTOR desc = WdfCmResourceListGetDescriptor(ResourcesTranslated, i);
         
         if (desc->Type == CmResourceTypeMemory) {
-            PVOID mapped_ptr = MmMapIoSpace(desc->u.Memory.Start, desc->u.Memory.Length, MmNonCached);
+            
+            // USE SECURE MAPPER: PAGE_READWRITE (0x04) | PAGE_NOCACHE (0x200)
+            PVOID mapped_ptr = MmMapIoSpaceEx(desc->u.Memory.Start, desc->u.Memory.Length, PAGE_READWRITE | PAGE_NOCACHE);
             if (!mapped_ptr) continue;
 
             PMDL mdl = IoAllocateMdl(mapped_ptr, (ULONG)desc->u.Memory.Length, FALSE, FALSE, NULL);
@@ -79,18 +79,20 @@ NTSTATUS EvtDevicePrepareHardware(WDFDEVICE Device, WDFCMRESLIST ResourcesRaw, W
                 continue;
             }
 
-            if (bar_count == 0) { // BAR0 (Registers)
+            // ROBUST BAR SELECTION BY SIZE
+            // If length is < 16MB, it's the MMIO register BAR.
+            // If length is massive (256MB+), it's the Framebuffer BAR.
+            if (desc->u.Memory.Length < (16 * 1024 * 1024)) { 
                 ctx->bar0_kernel_ptr = mapped_ptr;
                 ctx->bar0_mdl = mdl;
                 ctx->bar0_user_ptr = user_ptr;
                 ctx->bar0_size = desc->u.Memory.Length;
-            } else if (bar_count == 2) { // BAR2/5 (Framebuffer)
+            } else { 
                 ctx->bar2_kernel_ptr = mapped_ptr;
                 ctx->bar2_mdl = mdl;
                 ctx->bar2_user_ptr = user_ptr;
                 ctx->bar2_size = desc->u.Memory.Length;
             }
-            bar_count++;
         }
     }
     return STATUS_SUCCESS;
