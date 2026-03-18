@@ -92,11 +92,14 @@ int main() {
     // =========================================================================
 
     // --- PHASE 1: Switchtec Fabric Bind ---
-    // NOTE: Do NOT use "\\\\.\\switchtec0" — backslashes route switchtec_open()
-    // to switchtec_open_by_path(), which blindly appends the interface GUID to
-    // the raw string, producing an invalid path and a guaranteed CreateFile fail.
-    // "switchtec0" hits the sscanf("switchtec%d") branch -> switchtec_open_by_index(0)
-    // -> SetupDiGetClassDevs enumeration against SWITCHTEC_INTERFACE_GUID. Correct path.
+    // "switchtec0" is dispatched by switchtec_open() in switchtec.c via
+    // sscanf(device, "switchtec%d", &idx) -> switchtec_open_by_index(0)
+    // -> SetupDiGetClassDevs enumeration against SWITCHTEC_INTERFACE_GUID
+    // -> get_path() retrieves the real hardware device path from Windows
+    // -> switchtec_open_by_path() appends the GUID and calls CreateFile. Correct path.
+    // Do NOT use "\\\\.\\switchtec0" — that bypasses the dispatch and calls
+    // switchtec_open_by_path() directly with a raw string, which appends the
+    // GUID to "\\\\.\\switchtec0" and produces an invalid CreateFile path.
     struct switchtec_dev* sw_dev = switchtec_open("switchtec0");
     if (sw_dev) {
         gfms_bind_cmd cmd = {0};
