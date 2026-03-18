@@ -549,7 +549,7 @@ Send MRPC 0x84 sub-command 0x01 (GFMS\_BIND). Unmap.
 
 **Phase 6 — RLC Scheduler**
 Map GC BAR via MmMapIoSpaceEx (PAGE\_NOCACHE).
-Write 0x00000001 to mmRLC\_GPU\_IOV\_VF\_ENABLE (0x5b00 × 4).
+Write 0x00000003 to mmRLC\_GPU\_IOV\_VF\_ENABLE (0x5b00 × 4). // VF0 + VF1 — value 1 enables VF0 only
 Write 0x000186A0 to confirmed SCH register (Gate 7).
 Unmap.
 
@@ -560,7 +560,8 @@ Build PF2VF struct, compute checksum → write to VF\_FB\_BASE + 0x10000.
 
 **Phase 8 — Persistent Mailbox Service**
 Poll NBIO\_MMIO\[0x013A × 4] (RCV\_DW0) every 10ms.
-Respond to IDH\_REQ\_GPU\_INIT\_ACCESS (1) and IDH\_QUERY\_ALIVE (6).
+Respond to IDH\_REQ\_GPU\_INIT\_ACCESS (1) and IDH\_REQ\_GPU\_INIT\_DATA (6).
+Note: opcode 6 in RCV\_DW0 is IDH\_REQ\_GPU\_INIT\_DATA (VF→PF request), not IDH\_QUERY\_ALIVE (PF→VF event). Must reply with IDH\_REQ\_GPU\_INIT\_DATA\_READY (7).
 
 Repeat Phases 1–8 for Die 1 (second 6864 PF).
 

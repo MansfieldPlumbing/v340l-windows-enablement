@@ -226,9 +226,16 @@ Phase 3 — Mailbox loop (poll ~10ms per VF)
     write32(BAR0+0x3958, 1)        // IDH_READY_TO_ACCESS_GPU
     write32(BAR0+0x3978, 0x1)      // set TRN_MSG_VALID
 
-  if opcode == 6 (IDH_QUERY_ALIVE):
-    write32(BAR0+0x3978, 0x200)    // ACK, one write, done
+  if opcode == 6 (IDH_REQ_GPU_INIT_DATA):
+    write8(BAR0+0x3979, 0x02)      // ACK receipt (RMW — byte 1 only)
+    write8(BAR0+0x3978, 0x00)      // clear TRN_MSG_VALID (RMW — byte 0 only)
+    write32(BAR0+0x3958, 7)        // IDH_REQ_GPU_INIT_DATA_READY
+    write32(BAR0+0x3960, 0)        // TRN_DW2 = 0
+    write8(BAR0+0x3978, 0x01)      // set TRN_MSG_VALID (RMW — byte 0 only)
 ```
+**NOTE:** All writes to BAR0+0x3978 (MAILBOX_CONTROL) must use byte-granular RMW —
+do not use raw write32 on this register or you will clobber adjacent byte fields.
+Use `write8_safe` in the daemon.
 
 ---
 
@@ -237,7 +244,7 @@ Phase 3 — Mailbox loop (poll ~10ms per VF)
 ### What Is Correct
 
 - All register offset values match primary source exactly
-- IDH opcode values (1 = INIT_ACCESS, 6 = QUERY_ALIVE)
+- IDH opcode values (1 = INIT_ACCESS, 6 = REQ_GPU_INIT_DATA)
 - MAILBOX_CONTROL byte offsets (+0 TRN, +1 RCV)
 - Byte values (2 for ACK, 1 for valid, 0 for clear)
 - FB layout (0x00000 vBIOS, 0x10000 PF2VF)
@@ -250,6 +257,12 @@ Phase 3 — Mailbox loop (poll ~10ms per VF)
 - ReleaseHardware teardown sequence
 
 ### Critical Issues — Will Cause Silent Failures
+
+**[CRITICAL — cpp] Opcode 6 in RCV_DW0 mislabelled and mishandled.**  
+The daemon treated opcode 6 as `IDH_QUERY_ALIVE` (a PF→VF event) and only ACK'd it. It is `IDH_REQ_GPU_INIT_DATA` (a VF→PF request). The guest driver sends 6 then polls for 6000ms waiting for `IDH_REQ_GPU_INIT_DATA_READY` (7) back. Without sending 7, the guest times out on init. Source: `mxgpu_ai.c` / `mxgpu_ai.h` (Vega10). Confirmed negative against GIM (S7150 — predates this opcode). Fix: respond to 6 with 7. **APPLIED.**
+
+**[CRITICAL — c] `CreateFileA("\\\\.\\V340Mapper")` fails without explicit symlink.**  
+`WdfDeviceInitAssignName(NULL)` + `WdfDeviceCreateDeviceInterface` exposes the device under a GUID-based `\\?\` path only. The daemon's `CreateFileA` call gets `INVALID_HANDLE_VALUE`. Fix: assign explicit NT device name and `WdfDeviceCreateSymbolicLink`. **APPLIED.**
 
 **[CRITICAL — cpp] PF2VF struct is hand-rolled with wrong field layout.**  
 The `static_assert(sizeof==1024)` passes because padding fills it, but field offsets are wrong. The checksum field lands at the wrong byte offset. The guest driver reads wrong bytes, checksum validation returns `-EINVAL`, and the guest crashes on init. Fix: `#include "amdgv_sriovmsg.h"` directly. Do not hand-roll this struct.
@@ -314,3 +327,6 @@ Byte writes to MMIO through MDL mapping are architecture-dependent. If mailbox A
 | Gemini MAILBOX_CONTROL ACK value | 0x00020000 | 0x00000200 (byte 1, not byte 2) |
 | PF2VF version for Vega10 | Version 1 assumed | Version 2 confirmed from amdgpu_virt.c |
 | nbio header mxgpu_ai.c uses | nbio_7_0 assumed | nbio_6_1 confirmed (offsets identical) |
+| Opcode 6 in RCV_DW0 | `IDH_QUERY_ALIVE` (PF→VF event) | `IDH_REQ_GPU_INIT_DATA` (VF→PF request) — must reply with opcode 7 |
+| vBIOS copy length | Unverified (256KB ROM) | Strictly 64KB confirmed from GIM runtime log (`Copy VBios ... length 0x10000`) |
+| `CreateFileA("\\\\.\\V340Mapper")` | Expected to work | Fails without explicit symlink — `WdfDeviceCreateSymbolicLink` required |
