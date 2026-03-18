@@ -31,9 +31,13 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
 NTSTATUS EvtDriverDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
     UNREFERENCED_PARAMETER(Driver);
 
-    DECLARE_CONST_UNICODE_STRING(devName, L"\\Device\\V340Mapper");
-    DECLARE_CONST_UNICODE_STRING(symLink, L"\\DosDevices\\V340Mapper");
-    WdfDeviceInitAssignName(DeviceInit, &devName);
+    // NO hardcoded device name or symbolic link.
+    // The V340L has two independent Vega10 dies. PnP loads this driver once
+    // per die. A hardcoded \DosDevices\V340Mapper name causes
+    // STATUS_OBJECT_NAME_COLLISION on the second instance — Die 1 gets
+    // Code 10 before the daemon starts. GUID-based interface is the correct
+    // multi-instance pattern: each instance gets a unique \\?\... path,
+    // the daemon enumerates both via SetupDiGetClassDevs.
 
     // Register EvtFileCleanup so WDF calls it in the closing process's
     // thread context — the only safe place to call MmUnmapLockedPages
@@ -58,9 +62,8 @@ NTSTATUS EvtDriverDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
     NTSTATUS status = WdfDeviceCreate(&DeviceInit, &deviceAttributes, &device);
     if (!NT_SUCCESS(status)) return status;
 
-    status = WdfDeviceCreateSymbolicLink(device, &symLink);
-    if (!NT_SUCCESS(status)) return status;
-
+    // Expose via GUID interface only — daemon discovers both instances
+    // using SetupDiGetClassDevs against GUID_DEVINTERFACE_V340_MAPPER.
     status = WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_V340_MAPPER, NULL);
     if (!NT_SUCCESS(status)) return status;
 
