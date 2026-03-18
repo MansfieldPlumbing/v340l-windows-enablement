@@ -189,8 +189,14 @@ int main() {
                 
                 std::cout << "[MAILBOX] Access Granted. GPU Silicon Unlocked." << std::endl;
             }
-            else if (request == 6) { // IDH_QUERY_ALIVE
-                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 1, 2); // Send ACK
+            else if (request == 6) { // IDH_REQ_GPU_INIT_DATA
+                std::cout << "[MAILBOX] Received REQ_GPU_INIT_DATA from VF " << vf_id << ". Sending READY." << std::endl;
+
+                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 1, 2); // ACK receipt
+                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 0, 0); // clear TRN valid
+                write32(bars.bar0_user_ptr, REG_MSGBUF_TRN_DW0, 7);         // IDH_REQ_GPU_INIT_DATA_READY
+                write32(bars.bar0_user_ptr, REG_MSGBUF_TRN_DW2, 0);         // dw2 = 0
+                write8_safe(bars.bar0_user_ptr, REG_MAILBOX_CONTROL, 0, 1); // set TRN_MSG_VALID
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
