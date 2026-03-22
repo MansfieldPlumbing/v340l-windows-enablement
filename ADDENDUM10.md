@@ -122,12 +122,53 @@ directly on the fin stack is the minimum requirement.
 
 ---
 
+## LATE SESSION FINDING — MANAGEMENT ENDPOINT LOCATION
+
+**Status: UNVERIFIED — requires RWEverything scan next session**
+
+The switchtec-kmdf INF targets Class Code 058000 (Memory Controller).
+The three VEN_11F8 devices enumerated by SurveyDDA are all Class Code
+060400 (PCI-to-PCI Bridge). These are different device classes.
+
+Switchtec documentation (Toggle LED behavior.txt from Intel AIC package)
+shows every management endpoint example at Function 1:
+
+```
+switchtec0    PFX 48XG3    RevB    1.0b B08C    af:00.1
+```
+
+The `.1` is not incidental. The management endpoint is hardcoded to
+Function 1 on every Switchtec switch in this family.
+
+**Implication:** The correct driver bind target is 101:0.1, not 101:0.0.
+
+101:0.0 is the upstream bridge (Class 060400). pci.sys owns it and must
+keep it — it is what enumerates the downstream AMD dies. Replacing pci.sys
+on the bridge with the Intel endpoint driver would kill downstream
+enumeration and the AMD GPUs would vanish from the bus immediately.
+
+101:0.1 is where the management endpoint (Class 058000) should live.
+It did not appear in the SurveyDDA scan or Get-PnpDevice output — either
+Windows PnP missed it, ARI on the riser botched multi-function
+enumeration, or AMD factory eNVM hides it from the host.
+
+**Must verify before any driver install.**
+
+---
+
 ## NEXT SESSION PREREQUISITES
 
 1. Forced airflow on V340L heatsink — mandatory, non-negotiable
-2. Bind Intel switchtec-kmdf to upstream port 101:0.0 only
-3. Confirm `switchtec list` returns `switchtec0 PFX 48xG3`
-4. Resolve config space access shim for Phases 1-4
+2. **BEFORE TOUCHING DEVICE MANAGER:** Run RWEverything
+   - Open PCI Devices table
+   - Navigate to Bus 0x65 (101 decimal), Device 0
+   - Check Function 0 — expect VEN_11F8 DEV_8533 Class 060400 (bridge)
+   - Check Function 1 — two outcomes:
+     - Class 058000 present → bind Intel driver to 101:0.1, not 101:0.0
+     - All FF / absent → endpoint disabled in eNVM, different problem
+3. Bind Intel switchtec-kmdf to confirmed management endpoint only
+4. Confirm `switchtec list` returns `switchtec0 PFX 48xG3`
+5. Resolve config space access shim for Phases 1-4
 5. Disable both 6864 PF nodes in Device Manager (Gate 10 mitigation)
 6. Fire daemon
 7. Watch for DEV_686C in Device Manager with no Code 43
