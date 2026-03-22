@@ -43,6 +43,8 @@ command before the GPU silicon will respond to anything.
 
 This repo documents that layer and the path to activation.
 
+"Protocol verified against AMD's open source GIM driver (mxgpu_ai.c). Message IDs are identical. amdgv_sriovmsg.h is the extended version of the same spec with additional RAS telemetry support. The Windows daemon implements the identical handshake the Linux kernel guest driver uses."
+
 ---
 
 ## Status
