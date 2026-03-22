@@ -1,9 +1,10 @@
 # v340l-windows-enablement
 
-**Status: DAY 1 RECONNAISSANCE COMPLETE — Hardware alive, topology mapped.**
-The card is on the test bench. Dual-die IOMMU grouping confirmed independent.
-Switchtec fabric confirmed accessible. Userspace daemon testing in progress.
-See ADDENDUM10.md for live hardware findings and thermal warnings.
+**Status: DAY 2 COMPLETE — Switchtec driver bound. Code 10. One registry key from MRPC surface.**
+The Switchtec service is confirmed running and attached to the upstream port at 101:0.0.
+Device is at Code 10 — KMDF WDF registry parameters missing from sc.exe service creation.
+Fix is staged. Day 3 starts with one PowerShell command.
+See ADDENDUM11.md for Day 2 findings. See ADDENDUM10.md for Day 1 topology and thermal warnings.
 
 | | |
 |---|---|
@@ -12,7 +13,7 @@ See ADDENDUM10.md for live hardware findings and thermal warnings.
 | **CPU** | Intel Xeon W-2145 |
 | **RAM** | 160GB DDR4 ECC |
 | **Primary GPU** | RTX 3090 (host display) |
-| **OS** | Windows 11 Pro |
+| **OS** | Windows 11 Pro 24H2 (Build 26100) |
 
 ---
 
@@ -49,10 +50,10 @@ This repo documents that layer and the path to activation.
 
 ## Status
 
-**HARDWARE ALIVE.** The pre-empirical phase is complete. The card is in the
+**SWITCHTEC DRIVER BOUND.** The pre-empirical phase is complete. The card is in the
 system, the PCIe topology perfectly matches the structural predictions, and
-the Switchtec fabric is routing correctly. We are actively executing Path C
-— userspace daemon.
+the Switchtec fabric is routing correctly. The Switchtec service is bound to
+the upstream port. We are one registry key from an active MRPC surface.
 
 ---
 
@@ -77,10 +78,37 @@ Passive heatsink requires forced high-static-pressure airflow on open bench.
 No hardware damage — eNVM restored factory state on power cycle.
 Zero brick risk guarantee held on first contact.
 
-Day 2 prerequisites: forced airflow, Intel switchtec-kmdf bound to 101:0.0,
-both 6864 nodes disabled, daemon ready to fire.
-
 Full reconnaissance data: ADDENDUM10.md and SURVEYDDA_OUTPUT.txt
+
+---
+
+## Day 2 — Driver Bind Achieved
+
+Both dies confirmed alive via GPU-Z before any driver work:
+Vega10 GLXT SERVER, PCIe x16 Gen3, HBM2 2048-bit, 3584 shaders per die.
+No clock or temp readings without driver — expected.
+
+Windows 11 24H2 closed two previously viable bind paths:
+- GUI "Have Disk" + uncheck "Show compatible hardware" — dead on Build 26100
+- pnputil /scan-devices auto-bind — pci.sys outranks 3rd party at CC_060400
+
+Successful bind achieved via registry injection:
+- Switchtec.sys copied to System32\drivers
+- Service created via sc.exe → STATE: RUNNING
+- Class subkey manually created at HKLM\...\Control\Class\{1DED99DE...}\0000
+- Device Enum key force-patched: Service, ClassGUID, Class, Driver
+- DEVPKEY_Device_Service confirmed returning "Switchtec"
+
+Code 10 on device restart. Root cause identified: sc.exe bypasses INF install,
+so KMDF WDF parameters were never written. Missing key:
+
+    HKLM\SYSTEM\CurrentControlSet\Services\Switchtec\Parameters\Wdf
+      KmdfLibraryVersion = "1.15"
+
+Day 3 starts by writing this key and restarting the device.
+Switchtec CLI confirmed at: C:\Program Files\Switchtec\switchtec.exe
+
+Full Day 2 findings: ADDENDUM11.md
 
 ---
 
@@ -115,8 +143,8 @@ Path C — Switchtec userspace daemon (active)
 
 The Switchtec upstream port at 101:0.0 is claimed by pci.sys at enumeration
 as a generic bridge. It routes lanes correctly but exposes no MRPC management
-surface. Binding the Intel switchtec-kmdf-0.6 driver to 101:0.0 creates
-\\.\switchtec0. A userspace daemon compiled against libswitchtec then calls
+surface. Binding the Switchtec driver to 101:0.0 via registry injection creates
+the device interface. A userspace daemon compiled against libswitchtec then calls
 MRPC_GFMS_BIND (opcode 0x84, sub-cmd 0x01) to open SR-IOV VF routing paths
 in the Switchtec fabric.
 
@@ -153,15 +181,30 @@ Confirmed from primary source:
 - Official V340 Windows guest driver: AMD Radeon Pro Software 19.Q2
   native 686C target, no INF edit required
 - Zero brick risk — activation targets volatile SRAM only
+- Switchtec service successfully bound to upstream port via registry injection
+- Windows 11 24H2 GUI and auto-bind paths confirmed non-viable
 
 Open empirical gates:
 
 - CLOSED: Switchtec enumerates in Windows — YES at 101:0.0
 - CLOSED: DEV_8533 in INF coverage range — YES confirmed verbatim
-- Does switchtec-kmdf-0.6 bind cleanly to 101:0.0 on Windows 11?
+- CLOSED: Switchtec service binds to upstream port — YES via registry injection
+- Does Switchtec driver initialize cleanly? (Code 10 — WDF key fix pending)
+- Does switchtec.exe list return switchtec0?
 - Does MRPC_GFMS_BIND alone trigger DEV_686C enumeration?
 - Does DEV_686C load on bare metal Windows 11 Pro with no Code 43?
 - Does llama.cpp generate tokens?
+
+---
+
+## Platform Constraints Confirmed (Day 2)
+
+- Windows 11 24H2 Build 26100: GUI driver override path non-functional
+- pci.sys inbox driver wins all automatic bind races at CC_060400
+- Registry injection is the only viable driver bind mechanism on this platform
+- Switchtec management endpoint (Function 1, CC_058000) absent from PnP
+  enumeration — eNVM suppression vs ARI miss unresolved, RWEverything scan pending
+- Switchtec CLI: C:\Program Files\Switchtec\switchtec.exe
 
 ---
 
@@ -172,6 +215,7 @@ Open empirical gates:
 | BRIEF.md | Complete technical record — register values, gate table, implementation sequence, source registry |
 | SWITCHTEC.md | Switchtec driver and protocol findings — Intel AIC package analysis, GFMS_BIND payload, platform constraints |
 | ADDENDUM10.md | Day 1 hardware reconnaissance — confirmed topology, Gate 4 closed, thermal incident |
+| ADDENDUM11.md | Day 2 — Switchtec driver bind achieved, Code 10 root cause identified, Day 3 starting point |
 | SURVEYDDA_OUTPUT.txt | Raw SurveyDDA.ps1 output — primary source for all Day 1 topology claims |
 
 ---
@@ -191,4 +235,4 @@ and traced the implications through to the activation sequence. The
 fabrication log in BRIEF.md Section 12 records where AI-generated values
 were wrong and why the methodology caught them.
 
-Day 1 told us the topology is sound. Day 2 fires the daemon.
+Day 1 told us the topology is sound. Day 2 bound the driver. Day 3 fires the daemon.
