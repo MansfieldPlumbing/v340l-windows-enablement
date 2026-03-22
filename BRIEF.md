@@ -4,11 +4,11 @@
 
 ###### Date: March 2026
 
-###### Status: PRE-EMPIRICAL — Hardware validation pending
-###### No activation has been attempted on any Windows system.
+###### Status: DAY 1 EMPIRICAL — Hardware alive, topology mapped. Activation testing in progress.
+###### Switchtec endpoint and dual-die PCIe topology confirmed on Windows.
 ###### No community precedent exists for any of the three paths.
-###### All gates marked CLOSED are confirmed from primary source only.
-###### Hardware behaviour is unvalidated throughout.
+###### All gates marked CLOSED are confirmed from primary source or live hardware observation.
+###### Activation sequence not yet fired — thermal shutdown terminated Day 1 before attempt.
 
 ###### Changes over v11:
 
@@ -118,7 +118,7 @@ loading is one-time across the riser, inference is bound by on-die HBM2
 |1|gfx900 mailbox register offsets|**CLOSED** — nbio\_6\_1\_offset.h|
 |2|COMM\_BLK accessible without VIB|**CLOSED** — Microchip S24|
 |3|CONTROL / TRN\_DW3 address overlap|**CLOSED** — Disproved|
-|4|Dual-die IOMMU grouping on P520|OPEN — empirical on arrival|
+|4|Dual-die IOMMU grouping on P520|**CLOSED** — Independent. Separate downstream switch ports. BDFs 105:0.0 and 108:0.0. SURVEYDDA_OUTPUT.txt|
 |5|686C loads in Hyper-V DDA guest|OPEN — first driver load|
 |6|21.Q4 WX 8200 Vulkan 1.2|**CLOSED** — api\_version 1.2.196 confirmed|
 |7|World switch timer SCH register index|OPEN — MmMapIoSpaceEx read on arrival|
@@ -131,10 +131,10 @@ loading is one-time across the riser, inference is bound by on-die HBM2
 |14|Checksum computation algorithm|**CLOSED** — amdgpu\_virt.c fetched|
 |15|GPUIOV command opcodes|**CLOSED** — gim\_gpuiov.h|
 |16|PCI\_GPUIOV\_\* register offsets|**CLOSED** — gim\_pci.h|
-|—|Switchtec endpoint visible in Windows|OPEN — Day 1 Device Manager|
+|—|Switchtec endpoint visible in Windows|**CLOSED** — 101:0.0 upstream bridge, pci.sys. PFX 48xG3 DEV_8533. SURVEYDDA_OUTPUT.txt|
 |—|switchtec-kmdf availability|**CLOSED** — switchtec-kmdf-0.6 in Intel AIC package S64|
-|—|V340L DEV ID in INF coverage range|OPEN — Day 1 Device Manager. Predicted DEV\_8543 (PSX 48xG3)|
-|—|switchtec-kmdf-0.6 binds on Windows 11|OPEN — Day 1 empirical. DSE catalog date 2018|
+|—|V340L DEV ID in INF coverage range|**CLOSED** — Actual DEV_8533 (PFX 48xG3). Prediction was DEV_8543 (PSX). Confirmed covered by INF. SURVEYDDA_OUTPUT.txt|
+|—|switchtec-kmdf-0.6 binds on Windows 11|OPEN — thermal shutdown before driver bind attempt. Next session.|
 |—|GFMS\_BIND payload structure|**CLOSED** — lib/switchtec.c confirmed verbatim. See SWITCHTEC.md|
 |—|PDFID discovery method|**CLOSED** — gfms\_dump reports pdfid\_start/pdfid\_end per port|
 |—|fabric CLI available on Windows|**CLOSED NEGATIVE** — \#ifdef \_\_linux\_\_ cli/fabric.c. Daemon required|
@@ -626,6 +626,9 @@ Day 1 empirical gates required. Unvalidated on hardware.**
 switchtec-kmdf-0.6 confirmed in Intel AIC package (S64).
 WHQL-signed. DriverVer 04/17/2018,11.21.4.279.
 Covers VEN\_11F8&DEV\_854x&CC\_058000 (PSX Gen3 management endpoints).
+Actual V340L switch DEV ID confirmed DEV\_8533 (PFX 48xG3) from Day 1
+hardware observation — explicitly covered by INF. Prediction of DEV\_8543
+was incorrect. No impact on driver compatibility.
 NVMe load dependency confirmed fixed in firmware B08C — verbatim from
 Firmware Release Notes.txt: "Fix an issue with the Windows driver which
 requires a drive to be present for the driver to load."
@@ -794,9 +797,8 @@ payloads. Zero brick risk on any MRPC failure.
 ROM BAR enable bit must be set before mapping. Fallback: pre-extracted vBIOS.
 
 **Risk 4 — Switchtec endpoint hidden from host**
-AMD may have configured the V340L Switchtec to not advertise the management
-endpoint upstream in the factory eNVM partition table. If endpoint is
-invisible to Windows, Path C is unavailable and Path A is required.
+RESOLVED — Day 1 confirmed Switchtec PFX 48xG3 fully visible at 101:0.0.
+Path C is unblocked.
 
 **Risk 5 — ESXi nested DDA PCIe fidelity**
 DDA passes raw PCIe lanes to the ESXi guest VM. BAR MMIO writes from the
@@ -894,8 +896,10 @@ primary source before being recorded.
 Status: INFERRED HIGH. Fetch MS documentation before OS upgrade.
 
 **OQ-2 — Switchtec endpoint visibility in Windows**
-Status: OPEN — empirical Day 1 gate.
-Determines whether Path C is feasible at all.
+Status: CLOSED. Switchtec fabric fully visible at 101:0.0 as PCI Express
+Upstream Switch Port (DEV_8533, pci.sys). Two downstream ports at 102:0.0
+and 102:1.0 routing to dies at 105:0.0 and 108:0.0 respectively. Path C
+is fully unblocked for testing. See ADDENDUM10.md and SURVEYDDA_OUTPUT.txt.
 
 **OQ-3 — switchtec-kmdf availability**
 Status: CLOSED. switchtec-kmdf-0.6 confirmed in Intel AIC package (S64).
