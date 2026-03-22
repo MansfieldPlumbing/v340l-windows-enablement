@@ -1,0 +1,30 @@
+# SURVEYDDA_OUTPUT.txt
+# V340L MxGPU DDA Survey Tool — Day 1 Reconnaissance
+# Date: March 2026
+# Host: Lenovo ThinkStation P520
+# OS: Windows 11 Pro
+# Raw output — unedited
+
+===============================================================
+ V340L MxGPU DDA Survey Tool (Day 1 Reconnaissance)
+===============================================================
+Scanning for AMD (VEN_1002) and Switchtec (VEN_11F8)...
+Role             BDF     Status Name                               HardwareID                                   LocationPath
+----             ---     ------ ----                               ----------                                   ------------
+Switchtec Fabric 101:0.0 OK     PCI Express Upstream Switch Port   PCI\VEN_11F8&DEV_8533&SUBSYS_BEEF11F8&REV_00 PCIROOT(64)#PCI(0000)#PCI(0000)
+Switchtec Fabric 102:0.0 OK     PCI Express Downstream Switch Port PCI\VEN_11F8&DEV_8533&SUBSYS_BEEF11F8&REV_00 PCIROOT(64)#PCI(0000)#PCI(0000)#PCI(0000)
+Switchtec Fabric 102:1.0 OK     PCI Express Downstream Switch Port PCI\VEN_11F8&DEV_8533&SUBSYS_BEEF11F8&REV_00 PCIROOT(64)#PCI(0000)#PCI(0000)#PCI(0100)
+V340L PF (Die)   105:0.0 Error  Video Controller                   PCI\VEN_1002&DEV_6864&SUBSYS_0C001002&REV_05 PCIROOT(64)#PCI(0000)#PCI(0000)#PCI(0000)#PCI(0000)#PCI(0000)#PCI(0000)
+V340L PF (Die)   108:0.0 Error  Video Controller                   PCI\VEN_1002&DEV_6864&SUBSYS_0C001002&REV_05 PCIROOT(64)#PCI(0000)#PCI(0000)#PCI(0100)#PCI(0000)#PCI(0000)#PCI(0000)
+===============================================================
+ Day 1 Hardware Gate Status:
+ [PASS] 2x PFs and 1x Switchtec enumerated. Topology is sound.
+===============================================================
+ Hyper-V DDA Commands (Path A / Path B)
+===============================================================
+# Dismount V340L PF (Die) at 108:0.0
+Dismount-VMHostAssignableDevice -LocationPath "PCIROOT(64)#PCI(0000)#PCI(0000)#PCI(0100)#PCI(0000)#PCI(0000)#PCI(0000)" -Force
+Add-VMAssignableDevice -VMName "YOUR_VM_NAME" -LocationPath "PCIROOT(64)#PCI(0000)#PCI(0000)#PCI(0100)#PCI(0000)#PCI(0000)#PCI(0000)"
+# Dismount V340L PF (Die) at 105:0.0
+Dismount-VMHostAssignableDevice -LocationPath "PCIROOT(64)#PCI(0000)#PCI(0000)#PCI(0000)#PCI(0000)#PCI(0000)#PCI(0000)" -Force
+Add-VMAssignableDevice -VMName "YOUR_VM_NAME" -LocationPath "PCIROOT(64)#PCI(0000)#PCI(0000)#PCI(0000)#PCI(0000)#PCI(0000)#PCI(0000)"
