@@ -134,7 +134,7 @@ loading is one-time across the riser, inference is bound by on-die HBM2
 |—|Switchtec endpoint visible in Windows|**CLOSED** — 101:0.0 upstream bridge, pci.sys. PFX 48xG3 DEV_8533. SURVEYDDA_OUTPUT.txt|
 |—|switchtec-kmdf availability|**CLOSED** — switchtec-kmdf-0.6 in Intel AIC package S64|
 |—|V340L DEV ID in INF coverage range|**CLOSED** — Actual DEV_8533 (PFX 48xG3). Prediction was DEV_8543 (PSX). Confirmed covered by INF. SURVEYDDA_OUTPUT.txt|
-|—|switchtec-kmdf-0.6 binds on Windows 11|OPEN — thermal shutdown before driver bind attempt. Next session.|
+|—|switchtec-kmdf-0.6 binds on Windows 11|OPEN — thermal shutdown before attempt. NOTE: bind target is 101:0.1 (management endpoint, Class 058000), NOT 101:0.0 (bridge). Verify with RWEverything first.|
 |—|GFMS\_BIND payload structure|**CLOSED** — lib/switchtec.c confirmed verbatim. See SWITCHTEC.md|
 |—|PDFID discovery method|**CLOSED** — gfms\_dump reports pdfid\_start/pdfid\_end per port|
 |—|fabric CLI available on Windows|**CLOSED NEGATIVE** — \#ifdef \_\_linux\_\_ cli/fabric.c. Daemon required|
@@ -916,4 +916,3 @@ Status: OPEN — single most consequential unknown remaining.
 Does gfms\_bind alone trigger DEV\_686C, or is the GPUIOV/FB/RLC sequence
 also required from the host? Day 1 empirical. Fire gfms\_bind first.
 Determines whether daemon is ~200 lines or daemon plus KMDF driver.
-
