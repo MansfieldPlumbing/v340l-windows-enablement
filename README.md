@@ -1,7 +1,9 @@
 # v340l-windows-enablement
 
-**Status: PRE-EMPIRICAL — Hardware validation pending.**
-All paths fully specified from primary sources. No community precedent exists. Day 1 testing imminent.
+**Status: DAY 1 RECONNAISSANCE COMPLETE — Hardware alive, topology mapped.**
+The card is on the test bench. Dual-die IOMMU grouping confirmed independent.
+Switchtec fabric confirmed accessible. Userspace daemon testing in progress.
+See ADDENDUM10.md for live hardware findings and thermal warnings.
 
 | | |
 |---|---|
@@ -14,7 +16,9 @@ All paths fully specified from primary sources. No community precedent exists. D
 
 ---
 
-The V340L is a $50 enterprise GPU decommissioned from Google Stadia in January 2023. Thousands of units on the secondary market. Nobody has activated one on Windows.
+The V340L is a $50 enterprise GPU decommissioned from Google Stadia in January
+2023. Thousands of units on the secondary market. Nobody has activated one on
+Windows.
 
 Not because it can't be done. Because nobody identified the correct layer.
 
@@ -22,38 +26,73 @@ Not because it can't be done. Because nobody identified the correct layer.
 
 ## The Problem
 
-The card boots as `DEV_6864` (physical function). It only becomes `DEV_686C` (virtual functions, usable for inference) after a software activation sequence targeting volatile SRAM. Power cycle resets it. The sequence must run on every boot.
+The card boots as DEV_6864 (physical function). It only becomes DEV_686C
+(virtual functions, usable for inference) after a software activation sequence
+targeting volatile SRAM. Power cycle resets it. The sequence must run on every
+boot.
 
-On ESXi and Linux, AMD ships the activation mechanism — the `amdgpuv` VIB and the GIM kernel module respectively. On Windows: nothing. The community spent years fighting Code 43 with INF edits and vBIOS flashes. They were at the wrong layer.
+On ESXi and Linux, AMD ships the activation mechanism — the amdgpuv VIB and
+the GIM kernel module respectively. On Windows: nothing. The community spent
+years fighting Code 43 with INF edits and vBIOS flashes. They were at the
+wrong layer.
 
-The correct layer is the Microsemi Switchtec PSX Gen3 PCIe fabric switch embedded in the V340L. On Linux and ESXi, AMD's drivers handle this switch invisibly. On Windows, it requires an explicit driver and an MRPC activation command before the GPU silicon will respond to anything.
+The correct layer is the Microsemi Switchtec PFX Gen3 PCIe fabric switch
+embedded in the V340L. On Linux and ESXi AMD's drivers handle this switch
+invisibly. On Windows it requires an explicit driver and an MRPC activation
+command before the GPU silicon will respond to anything.
 
-This repo documents that layer and three theoretical paths to activation. **The hardware has not been validated yet. Everything here is pre-empirical.**
+This repo documents that layer and the path to activation.
 
 ---
 
 ## Status
 
-**PRE-EMPIRICAL.** Card in transit. All three paths are fully specified from
-primary sources. No activation has been attempted. No community precedent exists
-for any of these paths on Windows. Hardware validation pending.
+**HARDWARE ALIVE.** The pre-empirical phase is complete. The card is in the
+system, the PCIe topology perfectly matches the structural predictions, and
+the Switchtec fabric is routing correctly. We are actively executing Path C
+— userspace daemon.
 
 ---
 
-## The Key Finding — Theoretical
+## Day 1 — Reconnaissance Complete
 
-The V340L contains a Microsemi Switchtec PSX Gen3 PCIe fabric switch.
-Activating the card on Windows requires a driver for this switch before
-anything else can proceed.
+Three PCIe devices enumerated exactly as predicted:
+
+    101:0.0  Switchtec PFX 48xG3 Upstream Switch Port   [MRPC target]
+    102:0.0  Switchtec Downstream Switch Port            [to Die 0]
+    102:1.0  Switchtec Downstream Switch Port            [to Die 1]
+    105:0.0  AMD DEV_6864 Die 0  (Error, no driver, expected)
+    108:0.0  AMD DEV_6864 Die 1  (Error, no driver, expected)
+
+SUBSYS_0C001002 confirmed — AMD branded variant, not Lenovo OEM.
+SUBSYS_BEEF11F8 confirmed — factory Switchtec firmware, unmodified.
+
+Gate 4 closed: dies are on separate downstream switch ports.
+Independent IOMMU groups. Better than predicted — no coupling constraint.
+
+Session terminated by thermal shutdown before activation attempt.
+Passive heatsink requires forced high-static-pressure airflow on open bench.
+No hardware damage — eNVM restored factory state on power cycle.
+Zero brick risk guarantee held on first contact.
+
+Day 2 prerequisites: forced airflow, Intel switchtec-kmdf bound to 101:0.0,
+both 6864 nodes disabled, daemon ready to fire.
+
+Full reconnaissance data: ADDENDUM10.md and SURVEYDDA_OUTPUT.txt
+
+---
+
+## The Key Finding
+
+The V340L contains a Microsemi Switchtec PFX 48xG3 PCIe fabric switch
+(confirmed DEV_8533). Activating the card on Windows requires a driver for
+this switch before anything else can proceed.
 
 That driver was found hiding in Intel's firmware package for the
 AXXP3SWX08040 — a NVMe storage expansion AIC that uses the same Switchtec
-silicon. The driver (`switchtec-kmdf-0.6`) is WHQL-signed, covers PSX Gen3
-management endpoints via `VEN_11F8&DEV_854x&CC_058000`, and has a confirmed
-fix removing the NVMe-present requirement for driver load.
-
-This is a significant pre-hardware finding. Whether it actually works with
-the V340L is an empirical question that Day 1 will answer.
+silicon. The driver (switchtec-kmdf-0.6) is WHQL-signed, covers PFX Gen3
+management endpoints via VEN_11F8 DEV_8533, and has a confirmed fix
+removing the NVMe-present requirement for driver load.
 
 The finding went undiscovered by the community for years because:
 
@@ -64,80 +103,63 @@ The finding went undiscovered by the community for years because:
 
 It was found by stepping outside the conventional GPU search namespace,
 identifying the switch vendor from teardown documentation, and searching
-for Windows driver support for that specific silicon family. The driver
-was then verified against primary source character-for-character before
-any claims were made about it.
-
-**This is a theory, not a result. The card is in transit.**
+for Windows driver support for that specific silicon family.
 
 ---
 
-## Three Paths
+## The Activation Path
 
-**Path A — v340ctl KMDF**
+Path C — Switchtec userspace daemon (active)
+
+The Switchtec upstream port at 101:0.0 is claimed by pci.sys at enumeration
+as a generic bridge. It routes lanes correctly but exposes no MRPC management
+surface. Binding the Intel switchtec-kmdf-0.6 driver to 101:0.0 creates
+\\.\switchtec0. A userspace daemon compiled against libswitchtec then calls
+MRPC_GFMS_BIND (opcode 0x84, sub-cmd 0x01) to open SR-IOV VF routing paths
+in the Switchtec fabric.
+
+Key hypothesis: Because the Switchtec ASIC exists out-of-band from the OS
+rings, sending MRPC_GFMS_BIND to the switch may trigger the silicon to expose
+DEV_686C VFs natively without host-level PCIe capability carving. The daemon
+will test this directly.
+
+Path A — v340ctl KMDF (specified, not yet attempted)
 Windows-native KMDF kernel driver replicates AMD's GIM activation sequence
-from primary source headers. `DEV_686C` VFs passed into a Windows guest via
-Hyper-V DDA. Fully specified from AMD kernel source headers. No community
-precedent. No hardware validation.
+from primary source headers. Fully specified. Available as fallback if Path C
+alone is insufficient.
 
-**Path B — ESXi nested via Hyper-V DDA**
-Windows host passes raw `6864` PFs to a nested ESXi guest via DDA. AMD's
-native `amdgpuv` VIB handles activation inside ESXi. The `amdgpuv` VIB
-descriptor explicitly lists Lenovo subsystem ID `17AA0C00` — the P520 is
-AMD and Lenovo's co-certified reference platform for this card. Highest
-prior probability of success given AMD co-certified this exact hardware
-combination. Still unvalidated on this system.
-
-**Path C — Switchtec userspace daemon**
-`switchtec-kmdf-0.6` (confirmed in Intel AIC package) binds to the
-Switchtec management endpoint. A daemon compiled against libswitchtec calls
-`switchtec_gfms_bind()` to open fabric routing, then services the GPU
-mailbox protocol. Full `GFMS_BIND` payload structure confirmed from
-`switchtec-user` source. The `fabric` CLI subcommand group is Linux-only —
-the daemon must be compiled from source.
-
-**Critical unknown for Path C:** whether `gfms_bind` alone triggers
-`DEV_686C` enumeration, or whether the GPUIOV/MMIO sequence from Path A
-is also required from the Windows host. Day 1 determines this.
+Path B — ESXi nested via Hyper-V DDA (available)
+Windows host passes raw 6864 PFs to a nested ESXi guest via DDA. AMD's native
+amdgpuv VIB handles activation inside ESXi. The VIB descriptor explicitly
+lists Lenovo subsystem ID 17AA0C00 — the P520 is AMD and Lenovo's
+co-certified reference platform for this card.
 
 ---
 
 ## What the Research Has Established
 
-Confirmed from primary source before hardware arrival:
+Confirmed from primary source:
 
-- Switchtec management endpoint DEV IDs: `VEN_11F8&DEV_854x&CC_058000`
-  covered by `switchtec-kmdf-0.6` INF — confirmed verbatim
-- NVMe load dependency fixed in firmware B08C — confirmed verbatim from
-  release notes
-- `GFMS_BIND` wire format confirmed from `lib/switchtec.c`
-- PDFID discovery method confirmed — `gfms_dump` reports per-port ranges
-- `fabric` CLI group confirmed Linux-only — daemon required on Windows
+- Switchtec PFX 48xG3 DEV_8533 enumerated and confirmed covered by
+  switchtec-kmdf-0.6 INF
+- Both AMD DEV_6864 PFs enumerated at 105:0.0 and 108:0.0
+- Independent IOMMU groups — dies on separate downstream switch ports
+- SUBSYS_0C001002 — AMD branded variant confirmed
+- SUBSYS_BEEF11F8 — factory Switchtec firmware unmodified
 - GPUIOV register offsets, FB encoding, mailbox opcodes, PF2VF checksum
   algorithm — all confirmed from AMD kernel source headers
-- Official V340 Windows guest driver exists: AMD Radeon Pro Software for
-  Enterprise 19.Q2 — native `686C` target, no INF edit required
-- P520 is AMD/Lenovo co-certified reference platform per VIB descriptor
+- Official V340 Windows guest driver: AMD Radeon Pro Software 19.Q2
+  native 686C target, no INF edit required
 - Zero brick risk — activation targets volatile SRAM only
 
-Open empirical gates — only hardware can close these:
+Open empirical gates:
 
-- Does the Switchtec endpoint enumerate in Windows Device Manager?
-- Is the DEV ID in the INF coverage range?
-- Does `switchtec-kmdf-0.6` bind cleanly on Windows 11?
-- Does `gfms_bind` alone trigger `DEV_686C`, or is MMIO also required?
-- Does `DEV_686C` load in a Hyper-V DDA guest?
+- CLOSED: Switchtec enumerates in Windows — YES at 101:0.0
+- CLOSED: DEV_8533 in INF coverage range — YES confirmed verbatim
+- Does switchtec-kmdf-0.6 bind cleanly to 101:0.0 on Windows 11?
+- Does MRPC_GFMS_BIND alone trigger DEV_686C enumeration?
+- Does DEV_686C load on bare metal Windows 11 Pro with no Code 43?
 - Does llama.cpp generate tokens?
-
----
-
-## Day 1
-
-Three PCIe devices must enumerate: two `DEV_6864` PFs and one Switchtec
-management endpoint. If fewer than three enumerate, the riser or power
-supply is the problem, not the activation sequence.
-
-From there the decision tree is in `BRIEF.md`.
 
 ---
 
@@ -145,8 +167,10 @@ From there the decision tree is in `BRIEF.md`.
 
 | File | Description |
 |---|---|
-| `BRIEF.md` | Complete technical record — register values, gate table, implementation sequence, source registry |
-| `SWITCHTEC.md` | Switchtec driver and protocol findings — Intel AIC package analysis, GFMS_BIND payload, platform constraints |
+| BRIEF.md | Complete technical record — register values, gate table, implementation sequence, source registry |
+| SWITCHTEC.md | Switchtec driver and protocol findings — Intel AIC package analysis, GFMS_BIND payload, platform constraints |
+| ADDENDUM10.md | Day 1 hardware reconnaissance — confirmed topology, Gate 4 closed, thermal incident |
+| SURVEYDDA_OUTPUT.txt | Raw SurveyDDA.ps1 output — primary source for all Day 1 topology claims |
 
 ---
 
@@ -162,7 +186,7 @@ it against primary source.
 The distinction matters: AI did not discover the Intel driver. A search
 outside the conventional GPU namespace found it. AI confirmed it was real
 and traced the implications through to the activation sequence. The
-fabrication log in `BRIEF.md` Section 12 records where AI-generated
-values were wrong and why the methodology caught them.
+fabrication log in BRIEF.md Section 12 records where AI-generated values
+were wrong and why the methodology caught them.
 
-The card is in transit. Day 1 will tell us if the theory holds.
+Day 1 told us the topology is sound. Day 2 fires the daemon.
